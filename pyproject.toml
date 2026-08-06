@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-function"
+version = "0.0.1a0"
+description = "Type-safe LLM-powered functions. Write intelligent functions with decorators, not agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Agentic Function Contributors" }
+]
+keywords = [
+    "llm",
+    "ai",
+    "agent",
+    "function",
+    "openai",
+    "anthropic",
+    "structured-output",
+    "pydantic",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.5",
+    "typing-extensions>=4.8",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.10"]
+anthropic = ["anthropic>=0.18"]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+    "mypy>=1.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/<your-org>/agentic-function"
+Repository = "https://github.com/<your-org>/agentic-function"
+Issues = "https://github.com/<your-org>/agentic-function/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentic_function*"]
+exclude = ["tests*", "examples*", "docs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
