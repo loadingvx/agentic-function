@@ -50,9 +50,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/<your-org>/agentic-function"
-Repository = "https://github.com/<your-org>/agentic-function"
-Issues = "https://github.com/<your-org>/agentic-function/issues"
+Homepage = "https://github.com/loadingvx/agentic-function"
+Repository = "https://github.com/loadingvx/agentic-function"
+Issues = "https://github.com/loadingvx/agentic-function/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
