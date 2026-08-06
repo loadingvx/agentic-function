@@ -185,6 +185,36 @@ def test_max_retries_with_transient_error_succeeds(mock_backend):
     r = f("hi")
     assert r.x == 99
     assert calls["n"] == 2
+    # Retry observability — critical for model unit-test evals
+    assert r.metrics.attempts == 2
+    assert r.metrics.retries == 1
+    assert r.metrics.recovered is True
+    assert r.metrics.error is None
+    assert r.metrics.error_category is None
+    assert len(r.metrics.attempt_errors) == 1
+    assert r.metrics.attempt_errors[0].category == "backend"
+
+
+def test_retry_exhausted_carries_metrics_and_categories(mock_backend):
+    from agentic_function.errors import BackendError, RetryExhaustedError
+
+    mock_backend.register(lambda req: (_ for _ in ()).throw(BackendError("always")))
+
+    # max_retries=2 → attempts 0..2 (3 total)
+    @agentic_function(backend="mock", output_schema={"x": int}, max_retries=2)
+    def f(text: str) -> AgenticResult:
+        """..."""
+
+    with pytest.raises(RetryExhaustedError) as ei:
+        f("hi")
+    exc = ei.value
+    assert exc.attempts == 3
+    assert exc.retries == 2
+    assert exc.error_category == "backend"
+    assert exc.metrics is not None
+    assert exc.metrics.successful is False
+    assert len(exc.attempt_errors) == 3
+    assert all(a.category == "backend" for a in exc.attempt_errors)
 
 
 # ---------------------------------------------------------------------------

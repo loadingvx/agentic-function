@@ -1,7 +1,7 @@
 """Runtime subpackage: configuration, retry, cache, tracing, executor,
 budgets, aggregators, diagnostics."""
 from .config import global_config, GlobalConfig, configure
-from .metrics import TokenUsage, CallMetrics, PhaseTimings
+from .metrics import TokenUsage, CallMetrics, PhaseTimings, AttemptError
 from .trace import TraceSpan, TraceContext, TraceRecorder, get_current_trace, trace
 from .retry import RetryPolicy, default_retry_policy
 from .cache import CacheBackend, InMemoryCache, DiskCache, NullCache, get_cache, set_cache
@@ -21,7 +21,7 @@ from .diagnostics import (
 __all__ = [
     # config + metrics
     "global_config", "GlobalConfig", "configure",
-    "TokenUsage", "CallMetrics", "PhaseTimings",
+    "TokenUsage", "CallMetrics", "PhaseTimings", "AttemptError",
     # trace
     "TraceSpan", "TraceContext", "TraceRecorder", "get_current_trace", "trace",
     # retry

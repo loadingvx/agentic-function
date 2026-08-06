@@ -48,6 +48,7 @@ from .errors import (
     SchemaError,
     TimeoutError_,
     ValidationError,
+    error_category_of,
 )
 
 # ---- Runtime ----
@@ -57,6 +58,7 @@ from .runtime import (
     TraceContext,
     TraceSpan,
     TraceRecorder,
+    AttemptError,
     CallMetrics,
     PhaseTimings,
     TokenUsage,
@@ -137,13 +139,16 @@ __all__ = [
     "SchemaError",
     "TimeoutError_",
     "ValidationError",
+    "error_category_of",
     # runtime
     "Executor",
     "GlobalConfig",
     "TraceContext",
     "TraceSpan",
     "TraceRecorder",
+    "AttemptError",
     "CallMetrics",
+    "PhaseTimings",
     "TokenUsage",
     "RetryPolicy",
     "default_retry_policy",

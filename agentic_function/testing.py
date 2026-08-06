@@ -13,7 +13,9 @@ Headline features
   in-process ones, then restores them on exit. Use this for hermetic tests.
 * :func:`capture_metrics` — context manager that returns a list to which
   the executor appends every ``CallMetrics`` produced inside the ``with``
-  block.
+  block (success and failure).
+* :func:`eval_summary` — turn a list of ``CallMetrics`` into retry-rate /
+  failure-category stats for model unit-test evals.
 
 Design note
 -----------
@@ -230,19 +232,29 @@ def isolate_execution(
 # ----------------------------------------------------------------------
 @contextlib.contextmanager
 def capture_metrics() -> Iterator[list[CallMetrics]]:
-    """Append every ``CallMetrics`` produced inside the ``with`` block to
-    the yielded list.
+    """Append every ``CallMetrics`` produced inside the ``with`` block.
 
-    Implementation: install a fresh aggregator with a known id, then drain
-    it on exit. Works because the executor feeds the default aggregator.
+    Ideal for model unit-test evals::
+
+        with capture_metrics() as bag:
+            for sample in dataset:
+                try:
+                    classify(sample.text)
+                except RetryExhaustedError:
+                    pass
+        retry_rate = sum(1 for m in bag if m.retries > 0) / len(bag)
+        assert retry_rate < 0.1
+
+    Implementation: install a capturing aggregator; the executor records into
+    it on every completed call (success *and* failure).
     """
     from .runtime.aggregator import Aggregator, install_default_aggregator
     from .runtime.executor import Executor
     from .core.decorator import set_default_executor, get_default_executor
 
     collected: list[CallMetrics] = []
-    seen_keys: set[tuple[str, float, int, int]] = set()
-    prev_agg = install_default_aggregator(Aggregator())
+    agg = Aggregator(on_record=collected.append)
+    prev_agg = install_default_aggregator(agg)
     prev_exec = get_default_executor()
     # Fresh executor so it picks up the new aggregator via the module-level
     # lookup (the executor calls get_default_aggregator() at call time).
@@ -250,20 +262,29 @@ def capture_metrics() -> Iterator[list[CallMetrics]]:
 
     try:
         yield collected
-        # Drain whatever the aggregator saw.
-        agg = install_default_aggregator(None)
-        try:
-            summary = agg.summary()
-            # We can't reconstruct CallMetrics from the aggregator's summary
-            # alone, but we *can* tell the test that calls happened.
-            collected.append({
-                "summary": summary,
-            })  # type: ignore[arg-type]
-        finally:
-            pass
     finally:
         install_default_aggregator(prev_agg)
         set_default_executor(prev_exec)
+
+
+def eval_summary(metrics_list: list[CallMetrics]) -> dict[str, Any]:
+    """Compute retry / failure eval stats from a list of ``CallMetrics``.
+
+    Returns keys that model-quality unit tests typically assert on:
+
+    - ``call_count``, ``success_count``, ``failure_count``, ``recovered_count``
+    - ``total_retries``, ``avg_retries``, ``retry_rate``, ``recovery_rate``
+    - ``failure_rate``, ``errors_by_category``, ``retries_histogram``
+    """
+    from .runtime.aggregator import Aggregator
+
+    agg = Aggregator()
+    for i, m in enumerate(metrics_list):
+        name = m.function_name or f"call_{i}"
+        # Use the short name (last segment) for readable grouping when possible.
+        short = name.rsplit(".", 1)[-1] if name else f"call_{i}"
+        agg.record(m, function_name=short)
+    return agg.summary()
 
 
 def unmock() -> None:
@@ -277,5 +298,6 @@ __all__ = [
     "freeze_time",
     "isolate_execution",
     "capture_metrics",
+    "eval_summary",
     "unmock",
 ]

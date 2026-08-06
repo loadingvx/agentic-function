@@ -29,11 +29,12 @@ from .metrics import CallMetrics
 class Diagnostic:
     """Structured diagnostic for one call. JSON-serialisable."""
     function: str
-    status: str                       # "success" | "cache_hit" | "failed"
+    status: str                       # "success" | "cache_hit" | "recovered" | "failed"
     backend: str
     model: str
     attempts: int
     retries: int
+    recovered: bool
     latency_ms: float
     timings_ms: dict[str, float]
     tokens: dict[str, int]
@@ -41,6 +42,8 @@ class Diagnostic:
     total_cost_usd: float | None
     finish_reason: str | None
     error: str | None
+    error_category: str | None
+    attempt_errors: list[dict[str, Any]]
     request_preview: list[dict[str, Any]] | None
     response_preview: Any
     cache_hit: bool
@@ -52,7 +55,12 @@ class Diagnostic:
         lines.append(f"─ agentic_function: {self.function} [{self.status}]")
         lines.append(f"  backend        : {self.backend}")
         lines.append(f"  model          : {self.model}")
-        lines.append(f"  attempts       : {self.attempts}  (retries: {self.retries})")
+        lines.append(
+            f"  attempts       : {self.attempts}  "
+            f"(retries: {self.retries}"
+            + (", recovered" if self.recovered else "")
+            + ")"
+        )
         lines.append(f"  latency        : {self.latency_ms:.1f} ms")
         timings = self.timings_ms
         if timings:
@@ -80,8 +88,17 @@ class Diagnostic:
             lines.append(f"  finish_reason  : {self.finish_reason}")
         if self.cache_hit:
             lines.append("  cache          : HIT")
+        if self.error_category:
+            lines.append(f"  error_category : {self.error_category}")
         if self.error:
             lines.append(f"  error          : {self.error}")
+        if self.attempt_errors:
+            lines.append(f"  attempt_errors : {len(self.attempt_errors)}")
+            for ae in self.attempt_errors[:5]:
+                lines.append(
+                    f"    [{ae.get('attempt')}] {ae.get('category')}: "
+                    f"{str(ae.get('message', ''))[:80]}"
+                )
         if self.request_preview:
             lines.append(f"  request        : {len(self.request_preview)} message(s)")
             for i, m in enumerate(self.request_preview[:3]):
@@ -107,6 +124,7 @@ class Diagnostic:
             "model": self.model,
             "attempts": self.attempts,
             "retries": self.retries,
+            "recovered": self.recovered,
             "latency_ms": self.latency_ms,
             "timings_ms": self.timings_ms,
             "tokens": self.tokens,
@@ -114,6 +132,8 @@ class Diagnostic:
             "total_cost_usd": self.total_cost_usd,
             "finish_reason": self.finish_reason,
             "error": self.error,
+            "error_category": self.error_category,
+            "attempt_errors": self.attempt_errors,
             "request_preview": self.request_preview,
             "response_preview": self.response_preview,
             "cache_hit": self.cache_hit,
@@ -151,6 +171,8 @@ def diagnose_metrics(metrics: CallMetrics, *, function_name: str = "<agentic_fun
 def _from_metrics(m: CallMetrics, *, function_name: str) -> Diagnostic:
     if m.cache_hit:
         status = "cache_hit"
+    elif m.recovered:
+        status = "recovered"
     elif m.successful:
         status = "success"
     else:
@@ -162,6 +184,7 @@ def _from_metrics(m: CallMetrics, *, function_name: str) -> Diagnostic:
         model=m.model or "?",
         attempts=m.attempts,
         retries=m.retries,
+        recovered=m.recovered,
         latency_ms=m.latency_ms,
         timings_ms=m.timings.as_dict(),
         tokens={
@@ -173,6 +196,8 @@ def _from_metrics(m: CallMetrics, *, function_name: str) -> Diagnostic:
         total_cost_usd=m.total_cost_usd,
         finish_reason=m.finish_reason,
         error=m.error,
+        error_category=m.error_category,
+        attempt_errors=[a.as_dict() for a in m.attempt_errors],
         request_preview=m.request_snapshot,
         response_preview=m.response_snapshot,
         cache_hit=m.cache_hit,
@@ -201,17 +226,30 @@ def explain_failure(exc: BaseException) -> dict[str, Any]:
         RetryExhaustedError,
         SchemaError,
         ValidationError,
+        error_category_of,
     )
 
     if isinstance(exc, RetryExhaustedError):
         last = exc.last_exception
-        return {
+        metrics = getattr(exc, "metrics", None)
+        attempt_errors = [
+            (a.as_dict() if hasattr(a, "as_dict") else a)
+            for a in (getattr(exc, "attempt_errors", None) or [])
+        ]
+        out: dict[str, Any] = {
             "category": "retry_exhausted",
+            "root_category": error_category_of(exc),
             "attempts": exc.attempts,
+            "retries": getattr(exc, "retries", max(0, exc.attempts - 1)),
+            "error_category": getattr(exc, "error_category", None),
+            "attempt_errors": attempt_errors,
             "last_exception_type": type(last).__name__,
             "last_exception_message": str(last),
             "last_exception": _explain(last),
         }
+        if metrics is not None:
+            out["metrics"] = metrics.as_dict()
+        return out
     if isinstance(exc, ValidationError):
         return {
             "category": "validation",

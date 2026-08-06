@@ -171,12 +171,17 @@ class Executor:
         t_start = time.perf_counter()
         agg = get_default_aggregator()
 
-        def _record(metrics: CallMetrics) -> None:
+        budget: BudgetTracker | None = get_default_budget_tracker()
+
+        def _record(m: CallMetrics) -> None:
+            # Aggregator first — observability must not be gated on budget.
             if agg is not None:
                 try:
-                    agg.record(metrics, function_name=request.fn.name)
+                    agg.record(m, function_name=request.fn.name)
                 except Exception:
                     pass  # aggregator failures must never break a call
+            if budget is not None:
+                budget.record(m)  # may raise BudgetExceededError
 
         try:
             cfg = global_config()
@@ -186,7 +191,6 @@ class Executor:
                     else bool(cfg.cache_enabled)
             retry_policy = request.fn.retry_policy
             debug_on = _is_debug(request.fn)
-            budget: BudgetTracker | None = get_default_budget_tracker()
 
             # 1. Render prompt + compute cache key
             t = time.perf_counter()
@@ -224,14 +228,12 @@ class Executor:
                                                     metrics.usage.prompt_tokens,
                                                     metrics.usage.completion_tokens)
                     metrics.total_cost_usd = metrics.cost_usd
-                    metrics.successful = True
+                    metrics.mark_success(attempt=0)
                     metrics.latency_ms = (time.perf_counter() - t_start) * 1000
-                    metrics.attempts = 1
                     if span:
                         span.set_attribute("cache.hit", True)
                         span.finish("cached")
-                    if budget is not None:
-                        budget.record(metrics); _record(metrics)
+                    _record(metrics)
                     result = self._rehydrate_result(request.fn, cached)
                     result._metrics = metrics  # type: ignore[attr-defined]
                     return result
@@ -286,7 +288,7 @@ class Executor:
                     metrics.model = response.model or metrics.model
                     metrics.finish_reason = response.finish_reason
 
-                    metrics.successful = True
+                    metrics.mark_success(attempt=attempt)
                     metrics.latency_ms = (time.perf_counter() - t_start) * 1000
 
                     if debug_on:
@@ -294,6 +296,7 @@ class Executor:
 
                     if ctx and attempt_span:
                         attempt_span.set_attribute("usage", metrics.usage.__dict__)
+                        attempt_span.set_attribute("retries", metrics.retries)
                         ctx.end_span(attempt_span, "ok")
                     if span:
                         span.set_attribute("model", request.fn.model)
@@ -301,6 +304,8 @@ class Executor:
                         span.set_attribute("usage.prompt_tokens", metrics.usage.prompt_tokens)
                         span.set_attribute("usage.completion_tokens", metrics.usage.completion_tokens)
                         span.set_attribute("cost_usd", metrics.cost_usd)
+                        span.set_attribute("retries", metrics.retries)
+                        span.set_attribute("recovered", metrics.recovered)
                         span.finish("ok")
 
                     # 4. Write cache
@@ -321,23 +326,24 @@ class Executor:
                         ))
                         metrics.timings.cache_write_ms = (time.perf_counter() - t) * 1000
 
-                    if budget is not None:
-                        budget.record(metrics); _record(metrics)
+                    _record(metrics)
 
                     result._metrics = metrics  # type: ignore[attr-defined]
                     return result
 
                 except (BackendError, ParseError, ValidationError) as exc:
                     last_exc = exc
-                    metrics.retries = attempt
-                    metrics.error = f"{type(exc).__name__}: {exc}"
+                    metrics.note_attempt_failure(attempt, exc)
                     if debug_on and isinstance(exc, ValidationError):
                         metrics.response_snapshot = _snapshot_response(
                             getattr(exc, "raw_output", None)
                         )
                     if ctx and attempt_span:
+                        attempt_span.set_attribute("error.category", metrics.error_category)
                         ctx.end_span(attempt_span, "error")
-                    if not is_retryable(exc, retry_policy, attempt + 1):
+                    # ``attempt`` is 0-based; is_retryable treats it as
+                    # "retries already consumed" — stop when attempt >= max_retries.
+                    if not is_retryable(exc, retry_policy, attempt):
                         break
                     delay = retry_policy.delay_for(attempt + 1)
                     t = time.perf_counter()
@@ -345,7 +351,8 @@ class Executor:
                     metrics.timings.retry_backoff_ms += (time.perf_counter() - t) * 1000
                     _log.warning("retry %d/%d after %.2fs: %s",
                                  attempt + 1, retry_policy.max_retries, delay,
-                                 kv(error=str(exc), function=request.fn.name))
+                                 kv(error=str(exc), function=request.fn.name,
+                                    category=metrics.error_category))
                 except Exception as exc:
                     # Unknown exception from the backend — wrap it as a non-retryable
                     # BackendError so the user gets a uniform error type and the
@@ -356,22 +363,25 @@ class Executor:
                         raw=exc,
                     )
                     last_exc = wrapped
-                    metrics.retries = attempt
-                    metrics.error = f"{type(exc).__name__}: {exc}"
+                    metrics.note_attempt_failure(attempt, wrapped)
                     if ctx and attempt_span:
+                        attempt_span.set_attribute("error.category", metrics.error_category)
                         ctx.end_span(attempt_span, "error")
                     break
 
             metrics.latency_ms = (time.perf_counter() - t_start) * 1000
-            metrics.successful = False
+            metrics.mark_failure()
             if span:
+                span.set_attribute("retries", metrics.retries)
+                span.set_attribute("error.category", metrics.error_category)
                 span.finish("error")
-            if budget is not None:
-                budget.record(metrics); _record(metrics)
+            _record(metrics)
             raise RetryExhaustedError(
-                f"all {retry_policy.max_retries + 1} attempts failed for {request.fn.name}",
+                f"all {metrics.attempts} attempts failed for {request.fn.name}",
                 attempts=metrics.attempts,
                 last_exception=last_exc or RuntimeError("unknown failure"),
+                metrics=metrics,
+                attempt_errors=list(metrics.attempt_errors),
             )
         except Exception:
             if span and span.status == "ok":
@@ -393,13 +403,16 @@ class Executor:
         span = ctx.start_span("agentic_function.call", function=request.fn.name) if ctx else None
         t_start = time.perf_counter()
         agg = get_default_aggregator()
+        budget: BudgetTracker | None = get_default_budget_tracker()
 
-        def _record(metrics: CallMetrics) -> None:
+        def _record(m: CallMetrics) -> None:
             if agg is not None:
                 try:
-                    agg.record(metrics, function_name=request.fn.name)
+                    agg.record(m, function_name=request.fn.name)
                 except Exception:
                     pass
+            if budget is not None:
+                budget.record(m)
 
         try:
             cfg = global_config()
@@ -407,7 +420,6 @@ class Executor:
                 else (cfg.cache_enabled and request.fn.cache)
             retry_policy = request.fn.retry_policy
             debug_on = _is_debug(request.fn)
-            budget: BudgetTracker | None = get_default_budget_tracker()
 
             t = time.perf_counter()
             messages = render_prompt(request.fn, request.args, request.kwargs,
@@ -443,14 +455,12 @@ class Executor:
                                                     metrics.usage.prompt_tokens,
                                                     metrics.usage.completion_tokens)
                     metrics.total_cost_usd = metrics.cost_usd
-                    metrics.successful = True
+                    metrics.mark_success(attempt=0)
                     metrics.latency_ms = (time.perf_counter() - t_start) * 1000
-                    metrics.attempts = 1
                     if span:
                         span.set_attribute("cache.hit", True)
                         span.finish("cached")
-                    if budget is not None:
-                        budget.record(metrics); _record(metrics)
+                    _record(metrics)
                     result = self._rehydrate_result(request.fn, cached)
                     result._metrics = metrics  # type: ignore[attr-defined]
                     return result
@@ -496,7 +506,7 @@ class Executor:
                     metrics.model = response.model or metrics.model
                     metrics.finish_reason = response.finish_reason
 
-                    metrics.successful = True
+                    metrics.mark_success(attempt=attempt)
                     metrics.latency_ms = (time.perf_counter() - t_start) * 1000
 
                     if debug_on:
@@ -504,6 +514,7 @@ class Executor:
 
                     if ctx and attempt_span:
                         attempt_span.set_attribute("usage", metrics.usage.__dict__)
+                        attempt_span.set_attribute("retries", metrics.retries)
                         ctx.end_span(attempt_span, "ok")
                     if span:
                         span.set_attribute("model", request.fn.model)
@@ -511,6 +522,8 @@ class Executor:
                         span.set_attribute("usage.prompt_tokens", metrics.usage.prompt_tokens)
                         span.set_attribute("usage.completion_tokens", metrics.usage.completion_tokens)
                         span.set_attribute("cost_usd", metrics.cost_usd)
+                        span.set_attribute("retries", metrics.retries)
+                        span.set_attribute("recovered", metrics.recovered)
                         span.finish("ok")
 
                     if cache_enabled:
@@ -530,22 +543,21 @@ class Executor:
                         ))
                         metrics.timings.cache_write_ms = (time.perf_counter() - t) * 1000
 
-                    if budget is not None:
-                        budget.record(metrics); _record(metrics)
+                    _record(metrics)
 
                     result._metrics = metrics  # type: ignore[attr-defined]
                     return result
                 except (BackendError, ParseError, ValidationError) as exc:
                     last_exc = exc
-                    metrics.retries = attempt
-                    metrics.error = f"{type(exc).__name__}: {exc}"
+                    metrics.note_attempt_failure(attempt, exc)
                     if debug_on and isinstance(exc, ValidationError):
                         metrics.response_snapshot = _snapshot_response(
                             getattr(exc, "raw_output", None)
                         )
                     if ctx and attempt_span:
+                        attempt_span.set_attribute("error.category", metrics.error_category)
                         ctx.end_span(attempt_span, "error")
-                    if not is_retryable(exc, retry_policy, attempt + 1):
+                    if not is_retryable(exc, retry_policy, attempt):
                         break
                     delay = retry_policy.delay_for(attempt + 1)
                     t = time.perf_counter()
@@ -553,7 +565,8 @@ class Executor:
                     metrics.timings.retry_backoff_ms += (time.perf_counter() - t) * 1000
                     _log.warning("retry %d/%d after %.2fs: %s",
                                  attempt + 1, retry_policy.max_retries, delay,
-                                 kv(error=str(exc), function=request.fn.name))
+                                 kv(error=str(exc), function=request.fn.name,
+                                    category=metrics.error_category))
                 except Exception as exc:
                     wrapped = BackendError(
                         f"unexpected error in backend {request.fn.backend_name!r}: {exc}",
@@ -561,22 +574,25 @@ class Executor:
                         raw=exc,
                     )
                     last_exc = wrapped
-                    metrics.retries = attempt
-                    metrics.error = f"{type(exc).__name__}: {exc}"
+                    metrics.note_attempt_failure(attempt, wrapped)
                     if ctx and attempt_span:
+                        attempt_span.set_attribute("error.category", metrics.error_category)
                         ctx.end_span(attempt_span, "error")
                     break
 
             metrics.latency_ms = (time.perf_counter() - t_start) * 1000
-            metrics.successful = False
+            metrics.mark_failure()
             if span:
+                span.set_attribute("retries", metrics.retries)
+                span.set_attribute("error.category", metrics.error_category)
                 span.finish("error")
-            if budget is not None:
-                budget.record(metrics); _record(metrics)
+            _record(metrics)
             raise RetryExhaustedError(
-                f"all {retry_policy.max_retries + 1} attempts failed for {request.fn.name}",
+                f"all {metrics.attempts} attempts failed for {request.fn.name}",
                 attempts=metrics.attempts,
                 last_exception=last_exc or RuntimeError("unknown failure"),
+                metrics=metrics,
+                attempt_errors=list(metrics.attempt_errors),
             )
         except Exception:
             if span and span.status == "ok":

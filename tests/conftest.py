@@ -20,6 +20,13 @@ def _isolate_global_state():
     # Config
     configure(max_retries=0, cache_enabled=False, default_model="mock-model",
               default_backend="mock")
+    # Process-wide defaults left by mock_llm_table / capture_metrics / budgets.
+    from agentic_function.backends.base import set_default_backend
+    from agentic_function.runtime.aggregator import install_default_aggregator
+    from agentic_function.runtime.budget import install_budget_tracker
+    set_default_backend(None)
+    install_default_aggregator(None)
+    install_budget_tracker(None)
     # Function registry
     from agentic_function.composition.registry import get_global_registry
     get_global_registry()._store.clear()
@@ -27,6 +34,9 @@ def _isolate_global_state():
     from agentic_function.backends.base import _registry
     _registry.pop("test_backend", None)
     yield
+    set_default_backend(None)
+    install_default_aggregator(None)
+    install_budget_tracker(None)
 
 
 @pytest.fixture

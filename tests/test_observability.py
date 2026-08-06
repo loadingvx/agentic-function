@@ -36,8 +36,10 @@ from agentic_function.errors import (
     BackendError, ParseError, RetryExhaustedError, ValidationError,
 )
 from agentic_function.testing import (
-    freeze_time, isolate_execution, mock_llm_table,
+    capture_metrics, eval_summary, freeze_time, isolate_execution, mock_llm_table,
 )
+from agentic_function.errors import error_category_of
+from agentic_function.runtime.metrics import AttemptError
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +169,9 @@ class TestDiagnostics:
         exc = RetryExhaustedError("all failed", attempts=3, last_exception=inner)
         info = explain_failure(exc)
         assert info["category"] == "retry_exhausted"
+        assert info["root_category"] == "validation"
         assert info["attempts"] == 3
+        assert info["retries"] == 2
         assert info["last_exception_type"] == "ValidationError"
         assert info["last_exception"]["category"] == "validation"
 
@@ -215,7 +219,7 @@ class TestAggregator:
     def test_prometheus_export(self):
         agg = Aggregator()
         agg.record(
-            CallMetrics(successful=True, latency_ms=50,
+            CallMetrics(successful=True, latency_ms=50, attempts=1, retries=0,
                         usage=TokenUsage.of(10, 5), cost_usd=0.001),
             function_name="classify",
         )
@@ -223,8 +227,57 @@ class TestAggregator:
         assert "# TYPE agentic_calls_total counter" in text
         assert 'agentic_calls_total{function="classify"} 1' in text
         assert "# TYPE agentic_latency_ms_bucket histogram" in text
+        assert "# TYPE agentic_retries_total counter" in text
+        assert 'agentic_retries_total{function="classify"} 0' in text
         # +Inf bucket always present
         assert 'agentic_latency_ms_bucket{function="classify",le="+Inf"} 1' in text
+
+    def test_retry_and_failure_stats(self):
+        agg = Aggregator()
+        # first-try success
+        agg.record(
+            CallMetrics(successful=True, attempts=1, retries=0, latency_ms=10),
+            function_name="classify",
+        )
+        # recovered after 1 retry (validation then ok)
+        recovered = CallMetrics(
+            successful=True, attempts=2, retries=1, latency_ms=20,
+            attempt_errors=[
+                AttemptError(0, "validation", "ValidationError", "bad shape"),
+            ],
+        )
+        recovered.mark_success(attempt=1)
+        # mark_success clears error fields but keeps attempt_errors
+        agg.record(recovered, function_name="classify")
+        # exhausted after 2 retries
+        failed = CallMetrics(attempts=3, retries=0, latency_ms=30)
+        failed.note_attempt_failure(0, ValidationError("a"))
+        failed.note_attempt_failure(1, ValidationError("b"))
+        failed.note_attempt_failure(2, ParseError("c"))
+        failed.mark_failure()
+        agg.record(failed, function_name="classify")
+
+        summary = agg.summary()
+        totals = summary["totals"]
+        assert totals["call_count"] == 3
+        assert totals["success_count"] == 2
+        assert totals["failure_count"] == 1
+        assert totals["total_retries"] == 1 + 2  # recovered(1) + failed(2)
+        assert totals["calls_with_retries"] == 2
+        assert totals["recovered_count"] == 1
+        assert totals["retry_rate"] == pytest.approx(2 / 3)
+        assert totals["recovery_rate"] == pytest.approx(0.5)
+        assert summary["errors_by_category"]["validation"] == 3  # 1 recovered + 2 failed
+        assert summary["errors_by_category"]["parse"] == 1
+        f = summary["functions"]["classify"]
+        assert f["avg_retries"] == pytest.approx((1 + 2) / 3)
+        assert f["retries_histogram"] == {0: 1, 1: 1, 2: 1}
+
+    def test_on_record_callback(self):
+        seen: list[CallMetrics] = []
+        agg = Aggregator(on_record=seen.append)
+        agg.record(CallMetrics(successful=True, attempts=1), function_name="f")
+        assert len(seen) == 1
 
     def test_cache_hit_counting(self):
         agg = Aggregator()
@@ -243,12 +296,13 @@ class TestAggregator:
         assert agg.summary()["totals"]["call_count"] == 0
 
     def test_install_default_aggregator_wires_executor(self):
-        from agentic_function.core.decorator import set_default_executor
+        from agentic_function.core.decorator import get_default_executor, set_default_executor
         from agentic_function.runtime.executor import Executor
         from agentic_function.runtime.aggregator import Aggregator, install_default_aggregator
         agg = Aggregator()
         prev_agg = install_default_aggregator(agg)
-        prev_exec = set_default_executor(Executor())
+        prev_exec = get_default_executor()
+        set_default_executor(Executor())
         try:
             mock_llm_table([{"label": "p", "score": 0.5}])
             _diag_classify("hi")
@@ -256,6 +310,78 @@ class TestAggregator:
         finally:
             install_default_aggregator(prev_agg)
             set_default_executor(prev_exec)
+
+    def test_aggregator_records_failures_too(self):
+        from agentic_function.core.decorator import get_default_executor, set_default_executor
+        from agentic_function.runtime.executor import Executor
+        from agentic_function.runtime.aggregator import Aggregator, install_default_aggregator
+        from agentic_function.backends.mock_backend import MockBackend
+        from agentic_function import register_backend
+
+        agg = Aggregator()
+        prev_agg = install_default_aggregator(agg)
+        prev_exec = get_default_executor()
+        set_default_executor(Executor())
+        backend = MockBackend()
+        backend.register(lambda req: (_ for _ in ()).throw(BackendError("boom")))
+        register_backend("mock", backend)
+        try:
+            # max_retries=1 → attempts 0..1 (2 total, 1 retry)
+            @agentic_function(backend="mock", output_schema={"x": int}, max_retries=1)
+            def boom_fn(text: str):
+                """always fails"""
+
+            with pytest.raises(RetryExhaustedError):
+                boom_fn("x")
+            s = agg.summary()
+            assert s["totals"]["call_count"] == 1
+            assert s["totals"]["failure_count"] == 1
+            assert s["totals"]["total_retries"] == 1
+            assert s["errors_by_category"]["backend"] == 2  # 2 attempts
+        finally:
+            install_default_aggregator(prev_agg)
+            set_default_executor(prev_exec)
+
+# ---------------------------------------------------------------------------
+# capture_metrics + eval_summary — model unit-test eval surface
+# ---------------------------------------------------------------------------
+class TestCaptureMetricsEval:
+    def test_capture_metrics_collects_success_and_failure(self, mock_backend):
+        calls = {"n": 0}
+
+        def handler(req):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"label": "positive", "score": 0.9}
+            raise BackendError("nope")
+
+        mock_backend.register(handler)
+
+        @agentic_function(backend="mock",
+                          output_schema={"label": str, "score": float},
+                          max_retries=1)
+        def classify(text: str):
+            """classify"""
+
+        with capture_metrics() as bag:
+            classify("ok")
+            with pytest.raises(RetryExhaustedError):
+                classify("bad")
+        assert len(bag) == 2
+        assert bag[0].successful and bag[0].retries == 0
+        assert not bag[1].successful and bag[1].retries == 1
+        summary = eval_summary(bag)
+        assert summary["totals"]["call_count"] == 2
+        assert summary["totals"]["failure_count"] == 1
+        assert summary["totals"]["retry_rate"] == pytest.approx(0.5)
+
+    def test_error_category_of(self):
+        assert error_category_of(ValidationError("x")) == "validation"
+        assert error_category_of(ParseError("x")) == "parse"
+        assert error_category_of(BackendError("x")) == "backend"
+        assert error_category_of(
+            RetryExhaustedError("x", attempts=2, last_exception=ValidationError("y"))
+        ) == "validation"
 
 
 # ---------------------------------------------------------------------------

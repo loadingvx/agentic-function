@@ -41,7 +41,13 @@ TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
 
 
 def is_retryable(exc: BaseException, policy: RetryPolicy, attempt: int) -> bool:
-    """Decide whether ``exc`` (on attempt N) should be retried."""
+    """Decide whether ``exc`` should be retried.
+
+    ``attempt`` is the 0-based index of the attempt that just failed
+    (i.e. how many retries have already been consumed). When
+    ``attempt >= max_retries``, no further retries are allowed — so
+    ``max_retries=2`` permits attempts ``0, 1, 2`` (3 total).
+    """
     if attempt >= policy.max_retries:
         return False
     if isinstance(exc, TRANSIENT_ERRORS):
