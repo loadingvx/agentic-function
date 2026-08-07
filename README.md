@@ -6,7 +6,7 @@ Turn LLM capabilities into ordinary Python functions with `@agentic_function`: d
 
 - License: [MIT](LICENSE)
 - Python: 3.10+
-- Status: Alpha (`0.0.1a0`) · [PyPI](https://pypi.org/project/agentic-function/)
+- Status: Alpha [PyPI](https://pypi.org/project/agentic-function/)
 
 ---
 

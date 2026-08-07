@@ -6,7 +6,7 @@
 
 - 许可证：[MIT](LICENSE)
 - Python：3.10+
-- 状态：Alpha（`0.0.1a0`）· [PyPI](https://pypi.org/project/agentic-function/)
+- 状态：Alpha [PyPI](https://pypi.org/project/agentic-function/)
 
 ---
 
