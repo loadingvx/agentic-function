@@ -26,11 +26,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
+      - uses: actions/checkout@v6
 
       - name: Verify version matches release tag
         run: |
@@ -38,31 +34,27 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           EXPECTED="${TAG#v}"
 
-          PROJECT_VERSION="$(python - <<'PY'
-          import tomllib
-          print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])
-          PY
-          )"
-
-          INIT_VERSION="$(python - <<'PY'
-          import pathlib, re
-          text = pathlib.Path("agentic_function/__init__.py").read_text(encoding="utf-8")
-          m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', text)
-          if not m:
-              raise SystemExit("未在 agentic_function/__init__.py 中找到 __version__")
-          print(m.group(1))
-          PY
-          )"
+          PROJECT_VERSION="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' pyproject.toml | head -n1)"
+          INIT_VERSION="$(sed -nE 's/^__version__[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' agentic_function/__init__.py | head -n1)"
 
           echo "Release tag: ${TAG}"
           echo "期望版本:    ${EXPECTED}"
           echo "pyproject:   ${PROJECT_VERSION}"
           echo "__init__:    ${INIT_VERSION}"
 
+          if [ -z "${PROJECT_VERSION}" ] || [ -z "${INIT_VERSION}" ]; then
+            echo "::error::未能解析版本号。请确认 pyproject.toml 含 version = \"...\"，且 agentic_function/__init__.py 含 __version__ = \"...\"。"
+            exit 1
+          fi
+
           if [ "${PROJECT_VERSION}" != "${EXPECTED}" ] || [ "${INIT_VERSION}" != "${EXPECTED}" ]; then
             echo "::error::版本不一致。请先把 pyproject.toml 与 agentic_function/__init__.py 的版本改为 ${EXPECTED}，再创建同名 Release（tag 可用 v${EXPECTED}）。"
             exit 1
           fi
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
 
       - name: Build release distributions
         run: |
@@ -71,7 +63,7 @@ jobs:
           ls -lah dist/
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-dists
           path: dist/
@@ -90,7 +82,7 @@ jobs:
 
     steps:
       - name: Retrieve release distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: release-dists
           path: dist/
@@ -99,6 +91,5 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-          # 发布失败时打印更清晰的校验信息（不会泄露密钥）
           verbose: true
           print-hash: true
