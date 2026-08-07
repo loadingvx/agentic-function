@@ -12,12 +12,10 @@
 
 ## 安装
 
-当前 PyPI 版本为预发布版 `0.0.1a0`。pip 默认不安装 alpha / beta，因此不能只写 `pip install agentic-function`，否则会装不上或跳过该版本。预发布版 API 仍可能变更，请按需显式安装：
+pip 默认不安装 alpha / beta，因此不能只写 `pip install agentic-function`，否则会装不上或跳过该版本。预发布版 API 仍可能变更，请按需显式安装：
 
 ```bash
 pip install --pre agentic-function
-# 或锁定版本
-pip install agentic-function==0.0.1a0
 ```
 
 可选依赖（厂商 SDK）：

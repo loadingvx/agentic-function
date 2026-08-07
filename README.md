@@ -12,12 +12,10 @@ Turn LLM capabilities into ordinary Python functions with `@agentic_function`: d
 
 ## Installation
 
-The current PyPI release is a pre-release: `0.0.1a0`. pip does not install alpha / beta versions by default, so `pip install agentic-function` alone will not pick it up. Pre-release APIs may still change; install explicitly:
+ Pip does not install alpha / beta versions by default, so `pip install agentic-function` alone will not pick it up. Pre-release APIs may still change; install explicitly:
 
 ```bash
 pip install --pre agentic-function
-# or pin the version
-pip install agentic-function==0.0.1a0
 ```
 
 Optional provider SDKs:
