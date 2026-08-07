@@ -10,7 +10,41 @@
 
 [License: MIT](LICENSE)
 [Python 3.10+](https://www.python.org/downloads/)
-[Status: Alpha]()
+[Status: Alpha `0.0.1a0`](https://pypi.org/project/agentic-function/)
+
+---
+
+## Installation (Alpha — read this)
+
+> **Current PyPI release is an alpha: `0.0.1a0`.**
+> pip **does not install alpha/beta by default**, so a plain
+> `pip install agentic-function` will fail or skip this version until a
+> stable release exists. That is intentional: pre-releases are hidden so
+> production installs do not pick up APIs that may still change.
+
+**Install the current alpha (pick one):**
+
+```bash
+# Recommended: opt into pre-releases
+pip install --pre agentic-function
+
+# Or pin the exact alpha version
+pip install agentic-function==0.0.1a0
+```
+
+**With LLM provider SDKs:**
+
+```bash
+pip install --pre "agentic-function[openai]"
+pip install --pre "agentic-function[anthropic]"
+pip install --pre "agentic-function[openai,anthropic]"
+```
+
+Requires **Python 3.10+**. For local development from source:
+
+```bash
+pip install -e ".[dev,openai,anthropic]"
+```
 
 ---
 
@@ -542,11 +576,9 @@ default suite is hermetic.
 
 ## Installation
 
-```bash
-pip install agentic-function          # coming soon
-pip install -e ".[dev]"               # current dev install
-pip install -e ".[openai,anthropic]"  # with provider SDKs
-```
+See **[Installation (Alpha — read this)](#installation-alpha--read-this)** at the top.
+Summary: current version is `0.0.1a0`; use `pip install --pre agentic-function`
+(or pin `==0.0.1a0`). Plain `pip install agentic-function` will not pick up alphas.
 
 ---
 

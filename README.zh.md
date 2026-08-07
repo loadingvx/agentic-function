@@ -8,7 +8,40 @@
 
 [License: MIT](LICENSE)
 [Python 3.10+](https://www.python.org/downloads/)
-[Status: Alpha]()
+[Status: Alpha `0.0.1a0`](https://pypi.org/project/agentic-function/)
+
+---
+
+## 安装（Alpha 版 — 请先读）
+
+> **当前 PyPI 上只有 alpha 预发布版：`0.0.1a0`。**
+> pip **默认不会安装** alpha / beta 等预发布版本，因此直接执行
+> `pip install agentic-function` 会装不上或跳过该版本，直到出现正式版。
+> 这是 pip 的保护机制：避免生产环境在不知情时装上 API 仍可能变更的预发布包。
+
+**安装当前 alpha（二选一）：**
+
+```bash
+# 推荐：显式允许预发布版
+pip install --pre agentic-function
+
+# 或锁定确切的 alpha 版本号
+pip install agentic-function==0.0.1a0
+```
+
+**需要厂商 SDK 时：**
+
+```bash
+pip install --pre "agentic-function[openai]"
+pip install --pre "agentic-function[anthropic]"
+pip install --pre "agentic-function[openai,anthropic]"
+```
+
+需要 **Python 3.10+**。从源码做本地开发：
+
+```bash
+pip install -e ".[dev,openai,anthropic]"
+```
 
 ---
 
@@ -527,11 +560,9 @@ agentic-function/
 
 ## 安装
 
-```bash
-pip install agentic-function          # 即将上架
-pip install -e ".[dev]"               # 当前开发安装
-pip install -e ".[openai,anthropic]"  # 含厂商 SDK
-```
+详见文首 **[安装（Alpha 版 — 请先读）](#安装alpha-版--请先读)**。
+摘要：当前版本为 `0.0.1a0`；请用 `pip install --pre agentic-function`
+（或锁定 `==0.0.1a0`）。直接 `pip install agentic-function` 不会装到 alpha。
 
 ---
 
