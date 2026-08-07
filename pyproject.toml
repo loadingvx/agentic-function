@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentic-function"
-version = "0.0.1a1"
+version = "0.0.1a2"
 description = "Type-safe LLM-powered functions. Write intelligent functions with decorators, not agents."
 readme = "README.md"
 requires-python = ">=3.10"

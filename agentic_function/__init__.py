@@ -22,7 +22,7 @@ Quick start::
 """
 from __future__ import annotations
 
-__version__ = "0.0.1a1"  # keep in sync with pyproject.toml [project].version
+__version__ = "0.0.1a2"  # keep in sync with pyproject.toml [project].version
 
 # ---- Core ----
 from .core import (
